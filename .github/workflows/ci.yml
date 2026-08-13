@@ -1,0 +1,63 @@
+# Bundle-check each demo Worker.
+#
+# These packages have no build or test scripts — just a wrangler devDependency
+# and a wrangler.toml each — so the one thing worth gating is that wrangler can
+# still bundle them after a dependency bump. --dry-run does that without
+# touching the Cloudflare API, so no secrets are needed.
+#
+# The matrix is discovered at run time, so a new demo directory with a
+# wrangler.toml is picked up without editing this file.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      demos: ${{ steps.find.outputs.demos }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: find
+        name: Find demo Workers
+        run: |
+          demos=$(for f in */wrangler.toml; do
+            [ -f "$f" ] || continue
+            d=$(dirname "$f")
+            [ -f "$d/package.json" ] || continue
+            echo "$d"
+          done | jq -R . | jq -sc .)
+          echo "demos=$demos" >> "$GITHUB_OUTPUT"
+          echo "Discovered: $demos"
+
+  bundle:
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        demo: ${{ fromJson(needs.discover.outputs.demos) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.demo }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+      - name: Bundle check (wrangler dry-run)
+        run: npx wrangler deploy --dry-run --outdir /tmp/dist
